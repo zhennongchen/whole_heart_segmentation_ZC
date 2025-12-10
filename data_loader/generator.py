@@ -140,7 +140,7 @@ class Dataset_CMR(torch.utils.data.Dataset):
             slice_start = self.slice_range[0]
             slice_end = XXXXX
         else:
-            slice_start随机选
+            slice_start随机选XXXXXXXX
             slice_end = slice_start + self.slice_num
         start_slice = np.random.randint(0, image_loaded.shape[2] - 5)
         image_loaded = image_loaded[:,:, start_slice : start_slice + 5]

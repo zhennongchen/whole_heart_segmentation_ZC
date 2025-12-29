@@ -135,7 +135,7 @@ class Dataset_CMR(torch.utils.data.Dataset):
         image_loaded = Data_processing.crop_or_pad(image_loaded, target_size = [target_size_x, target_size_x, image_loaded.shape[2]], padding_value = np.min(image_loaded))
         seg_loaded = Data_processing.crop_or_pad(seg_loaded, target_size = [target_size_x, target_size_x, seg_loaded.shape[2]], padding_value = np.min(seg_loaded))
 
-        # 随机选slice_num个slice
+        # 随机选slice_num=5个slice
         if self.slice_range is not None:
             slice_start = self.slice_range[0]
             slice_end = XXXXX

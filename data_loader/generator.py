@@ -125,22 +125,23 @@ class Dataset_CMR(torch.utils.data.Dataset):
         # 同时，sam的encoding是16的倍数
         # 所以我们的size_x和size_y都设置为(2^n*16)的倍数
         # 假设n=3，那么size_x和size_y都设置为128的倍数，选择有[128,256,384,512]
-        size_candidtates = [128,256,384,512]
         size_x = image_loaded.shape[0]
         size_y = image_loaded.shape[1]
         assert size_x == size_y
 
         # 对于size_x来说，candidates中大于等于size_x的最小值是什么？
-        target_size_x = XXXXXXX
+        need_be_divisble_by = 128
+        target_size_x = size_x // need_be_divisble_by * need_be_divisble_by
         image_loaded = Data_processing.crop_or_pad(image_loaded, target_size = [target_size_x, target_size_x, image_loaded.shape[2]], padding_value = np.min(image_loaded))
         seg_loaded = Data_processing.crop_or_pad(seg_loaded, target_size = [target_size_x, target_size_x, seg_loaded.shape[2]], padding_value = np.min(seg_loaded))
 
         # 随机选slice_num=5个slice
         if self.slice_range is not None:
             slice_start = self.slice_range[0]
-            slice_end = XXXXX
+            slice_end = slice_start + self.slice_num
         else:
-            slice_start随机选XXXXXXXX
+            slice_start = np.random.randint(0, image_loaded.shape[2] - self.slice_num)
+            
             slice_end = slice_start + self.slice_num
         start_slice = np.random.randint(0, image_loaded.shape[2] - 5)
         image_loaded = image_loaded[:,:, start_slice : start_slice + 5]

@@ -7,43 +7,37 @@ import SimpleITK as sitk
 import cv2
 import random
 import nibabel as nb
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
-def create_lowpass_mask(shape, radius):
-    H, W, S = shape
-    center = np.array([H // 2, W // 2, S // 2])
-    y, x, z = np.ogrid[:H, :W, :S]  # 顺序和 shape 对应
-    dist = np.sqrt((x - center[1])**2 + (y - center[0])**2 + (z - center[2])**2)
-    mask = dist <= radius
-    return mask
+## important: DICE loss
+def customized_dice_loss(pred, mask, num_classes, exclude_index = 10):
+    # set valid mask to exclude pixels either equal to exclude index 
+    valid_mask = (mask != exclude_index) 
 
-def create_2d_lowpass_mask(shape, radius):
-    H, W = shape
-    cy, cx = H // 2, W // 2
-    y, x = np.ogrid[:H, :W]
-    dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-    mask = dist <= radius
-    return mask
+    # one-hot encode the mask
+    one_hot_mask = F.one_hot(mask, num_classes = exclude_index + 1).permute(0,3,1,2)
 
 
-def pick_random_from_segments(X):
-    # Generate the list from 0 to X
-    full_list = list(range(X + 1))
-    
-    # Determine the segment size
-    segment_size = len(full_list) // 4
+    # softmax the prediction
+    pred_softmax = F.softmax(pred,dim = 1)
 
-    # Initialize selected numbers
-    selected_numbers = []
+    pred_probs_masked = pred_softmax[:,1:num_classes,...] * valid_mask.unsqueeze(1)  # Exclude background class
+    ground_truth_one_hot_masked = one_hot_mask[:,1:num_classes,...] * valid_mask.unsqueeze(1)
+        
+    # Calculate intersection and union, considering only the included pixels
+    intersection = torch.sum(pred_probs_masked * ground_truth_one_hot_masked, dim=(0,2, 3))
+    union = torch.sum(pred_probs_masked, dim = (0,2,3)) + torch.sum(ground_truth_one_hot_masked, dim=(0,2, 3))
+        
+    # Compute Dice score
+    dice_score = (2.0 * intersection + 1e-6) / (union + 1e-6)  # Adding a small epsilon to avoid division by zero
+        
+    # Dice loss is 1 minus Dice score
+    dice_loss = 1 - dice_score
 
-    # Loop through each segment and randomly pick one number
-    for i in range(4):
-        start = i * segment_size
-        end = (i + 1) * segment_size if i < 3 else len(full_list)  # Ensure last segment captures all remaining elements
-        segment = full_list[start:end]
-        selected_numbers.append(random.choice(segment))
-
-    return selected_numbers
+    return torch.mean(dice_loss)
 
 
 # function: set window level
@@ -137,60 +131,6 @@ def save_grayscale_image(a,save_path,normalize = True, WL = 50, WW = 100):
     Image.fromarray((I*255).astype('uint8')).save(save_path)
 
 
-# function: normalize translation control points:
-def convert_translation_control_points(t, dim, from_pixel_to_1 = True):
-    if from_pixel_to_1 == True: # convert to a space -1 ~ 1
-        t = [tt / dim * 2 for tt in t]
-    else: # backwards
-        t = [tt / 2 * dim for tt in t]
-    
-    return np.asarray(t)
-
-
-# function: comparison error
-def compare(a, b,  cutoff_low = 0 ,cutoff_high = 1000000):
-    # compare a to b, b is ground truth
-    # if a pixel is lower than cutoff (meaning it's background), then it's out of comparison
-    c = np.copy(b)
-    diff = abs(a-b)
-   
-    a = a[(c>cutoff_low)& (c < cutoff_high) ].reshape(-1)
-    b = b[(c>cutoff_low)& (c < cutoff_high) ].reshape(-1)
-
-    diff = abs(a-b)
-
-    # mean absolute error
-    mae = np.mean(abs(a - b)) 
-
-    # mean squared error
-    mse = np.mean((a-b)**2) 
-
-    # root mean squared error
-    rmse = math.sqrt(mse)
-
-    # relative root mean squared error
-    dominator = math.sqrt(np.mean(b ** 2))
-    r_rmse = rmse / dominator * 100
-
-    # structural similarity index metric
-    cov = np.cov(a,b)[0,1]
-    ssim = (2 * np.mean(a) * np.mean(b)) * (2 * cov) / (np.mean(a) ** 2 + np.mean(b) ** 2) / (np.std(a) ** 2 + np.std(b) ** 2)
-    # ssim = compare_ssim(a,b)
-
-    # # normalized mean squared error
-    # nmse = np.mean((a-b)**2) / mean_square_value
-
-    # # normalized root mean squared error
-    # nrmse = rmse / mean_square_value
-
-    # peak signal-to-noise ratio
-    if cutoff_high < 1000:
-        max_value = cutoff_high
-    else:
-        max_value = np.max(b)
-    psnr = 10 * (math.log10((max_value**2) / mse ))
-
-    return mae, mse, rmse, r_rmse, ssim,psnr
 
 
 # function: dice
@@ -200,87 +140,3 @@ def np_categorical_dice(pred, truth, k):
     B = (truth == k).astype(np.float32)
     return 2 * np.sum(A * B) / (np.sum(A) + np.sum(B))
 
-
-# function: erode and dilate
-def erode_and_dilate(img_binary, kernel_size, erode = None, dilate = None):
-    img_binary = img_binary.astype(np.uint8)
-
-    kernel = np.ones(kernel_size, np.uint8)  
-
-    if dilate is True:
-        img_binary = cv2.dilate(img_binary, kernel, iterations = 1)
-
-    if erode is True:
-        img_binary = cv2.erode(img_binary, kernel, iterations = 1)
-    return img_binary
-
-
-
-# function: round difference: if abs(a-b)  % 1 <= threshold, then a-b = math.floor(a-b)
-def round_diff(pred, gt, threshold):
-    # b is ground truth
-    A = pred - gt 
-    rounded_A = np.where((np.abs(A) % 1 <= threshold) & (A < 0), np.ceil(A), np.where((np.abs(A) % 1 <= threshold) & (A > 0), np.floor(A), A))
-    return gt + rounded_A
-
-# function: hanning filter
-def hann_filter(x, projector):
-    x_prime = np.fft.fft(x)
-    x_prime = np.fft.fftshift(x_prime)
-    hanning_window = np.hanning(projector.nu)
-    x_prime_hann = x_prime * hanning_window
-    x_inverse_hann = np.fft.ifft(np.fft.ifftshift(x_prime_hann))
-    return x_inverse_hann
-
-def apply_hann(prjs, projector):
-    prjs_hann = np.zeros_like(prjs)
-    for ii in range(0,prjs_hann.shape[0]):
-        for jj in range(0, prjs_hann.shape[2]):
-            for kk in range(0, prjs_hann.shape[1]):
-                prjs_hann[ii,kk,jj,:] = hann_filter(prjs[ii,kk,jj,:], projector)
-    return prjs_hann
-
-
-# function: patch definition:
-def patch_definition(img_shape, patch_size, stride, count_for_overlap = False):
-    # now assume patch_size is square in x and y, and same dimension as img in z 
-    start = 0
-    end = img_shape[0] - patch_size
-
-    origin_x_list = np.arange(start, end+1, stride)
-
-    patch_origin_list = [[origin_x_list[i], origin_x_list[j]] for i in range(0,origin_x_list.shape[0]) for j in range(0,origin_x_list.shape[0])]
-    
-    if count_for_overlap == False:
-        return patch_origin_list, 0
-    else:
-        count = np.zeros(img_shape)
-        for origin in patch_origin_list:
-            count[origin[0] : (origin[0] + patch_size), origin[1] : (origin[1] + patch_size), :] += 1
-
-        return patch_origin_list, count
-
-# function: randomly sample patch origins
-def sample_patch_origins(patch_origins, N, include_original_list = None):
-    if isinstance(patch_origins, list) == False:
-        patch_origins = patch_origins.tolist()
-    origins = np.array(patch_origins)
-    x_min,  x_max, y_min, y_max = np.min(origins[:,0]), np.max(origins[:,0]), np.min(origins[:,1]), np.max(origins[:,1])
-
-    # Generate random coordinates
-    pixels = [(random.randint(x_min, x_max), random.randint(y_min, y_max)) for _ in range(N)]
-
-    if include_original_list is True:
-        pixels = patch_origins + pixels
-
-    return pixels
-
-
-# function: preload data
-# def preload_data(file_list):
-#     loaded_image = []
-#     for nn in range(0, len(file_list)):
-        
-#         img = nb.load(file_list[nn]).get_fdata()
-#         loaded_image.append(img)
-#     return loaded_image

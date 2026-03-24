@@ -1,115 +1,104 @@
-import sys
-sys.path.append('/host/d/Github/')
-
 import numpy as np
 import nibabel as nb
 import os
 from skimage.measure import block_reduce
 from scipy import ndimage
-from dipy.align.reslice import reslice
 import whole_heart_segmentation_ZC.functions_collection as ff
 
-# function: histogram equalization
-def equalize_histogram(bins, hist, weight):
-    '''
-    Equalize the histogram such that the cumulative distribution function is linear.
-    '''
-    # normalized cdf
-    cdf = np.cumsum(hist) / np.sum(hist)
 
-    # target cdf 
-    cdf_target = np.linspace(0, 1, len(cdf))
-
-    bins_mapped = np.interp(cdf, cdf_target, bins)
-
-    # weight the original and the mapped bins
-    bins_mapped = weight * bins_mapped + (1 - weight) * bins
-
-    return bins_mapped
-
-def apply_transfer_to_img(img: np.array, bins: np.array, bins_mapped: np.array, reverse=False):
-    '''
-    Apply the transfer function to the image.
-    The value outside the transfer range should be preserved.
-    '''
-    if reverse:
-        bins, bins_mapped = bins_mapped, bins
-
-    mask = (img > bins[0]) & (img < bins[-1])
-    img_mapped = np.interp(img.astype(np.float32), bins, bins_mapped)
-    img_mapped[~mask] = img[~mask]
-
-    return img_mapped
-
-def crop_or_pad(array, target, value):
-    # Pad each axis to at least the target.
-    margin = target - np.array(array.shape)
+# function: basic crop or pad
+def crop_or_pad(image, target_size, padding_value):
+    # Pad each axis to the target size or crop each axis to the target size
+    # target: e.g. [256,256,256]
+    # value is the constant value for padding
+    margin = target_size - np.array(image.shape)
     padding = [(0, max(x, 0)) for x in margin]
-    array = np.pad(array, padding, mode="constant", constant_values=value)
+    image = np.pad(image, padding, mode="constant", constant_values = padding_value)
+
     for i, x in enumerate(margin):
-        array = np.roll(array, shift=+(x // 2), axis=i)
+        image = np.roll(image, shift=+(x // 2), axis=i)
 
-    if type(target) == int:
-        target = [target] * array.ndim
+    if type(target_size) == int:
+        target_size = [target_size] * image.ndim
 
-    ind = tuple([slice(0, t) for t in target])
-    return array[ind]
+    ind = tuple([slice(0, t) for t in target_size])
+    return image[ind]
 
-def correct_shift_caused_in_pad_crop_loop(img):
-    # if an image goes from [a,b,c] --> pad --> [A,B,c] --> crop --> [a,b,c], when a,b is even, it goes back to original image, but when a,b is odd, it need to shift by 1 pixel in x and y
-    if img.shape[0] % 2 == 1:
 
-        img = np.roll(img, shift = 1, axis = 0)
-        img = np.roll(img, shift = 1, axis = 1)
+# function:center crop (need to provide the segmentation mask)
+def center_crop(I, S, crop_size, according_to_which_class, centroid = None):
+    # make sure S is integers
+    S = S.astype(int)
+    # Compute the centroid of the class 1 region in the mask
+    # assert isinstance(according_to_which_class, list), "according_to_which_class must be a list"
+    # assert I.shape == S.shape, "Image and mask must have the same shape"
+    # assert len(crop_size) == len(I.shape), "Crop size dimensions must match image dimensions"
+    
+    # Find the indices where the mask > 0
+    if centroid is None:
+        mask_indices = np.argwhere(np.isin(S, according_to_which_class))
+
+        if len(mask_indices) == 0:
+            raise ValueError("The mask does not contain any class 1 region")
+
+        # Compute centroid
+        
+        centroid = np.mean(mask_indices, axis=0).astype(int)
+
+    # Define the crop slices for each dimension
+    slices = []
+    for dim, size in enumerate(crop_size):
+        start = max(centroid[dim] - size // 2, 0)
+        end = start + size
+        # Adjust the start and end if they are out of bounds
+        if end > I.shape[dim]:
+            end = I.shape[dim]
+            start = max(end - size, 0)
+        slices.append(slice(start, end))
+
+    # Crop the image and the mask
+    if len(I.shape) == 2:
+        cropped_I = I[slices[0], slices[1]]
+        cropped_S = S[slices[0], slices[1]]
+    elif len(I.shape) == 3:
+        cropped_I = I[slices[0], slices[1], slices[2]]
+        cropped_S = S[slices[0], slices[1], slices[2]]
     else:
-        img = np.copy(img)
+        raise ValueError("Image dimensions not supported")
+
+    return cropped_I, cropped_S, centroid
+
+# function: turn image range into 0-255
+def turn_image_range_into_0_255(img):
+    # turn image range into 0-255
+    img = img.astype(float)
+    if np.max(img) != 255:
+        img = (img - np.min(img)) / (np.max(img) - np.min(img)) * 255
     return img
 
 
-def adapt(x, cutoff = False,add_noise = False, sigma = 5, normalize = True, expand_dim = True):
-    x = np.load(x, allow_pickle = True)
     
-    if cutoff == True:
-        x = cutoff_intensity(x, -1000)
-    
-    if add_noise == True:
-        ValueError('WRONG NOISE ADDITION CODE')
-        x =  x + np.random.normal(0, sigma, x.shape) 
-
-    if normalize == True:
-        x = normalize_image(x)
-    
-    if expand_dim == True:
-        x = np.expand_dims(x, axis = -1)
-    # print('after adapt, shape of x is: ', x.shape)
-    return x
-
-
-def normalize_image(x, normalize_factor = 1000, image_max = 100, image_min = -100, final_max = 1, final_min = -1 , invert = False):
-    # a common normalization method in CT
-    # if you use (x-mu)/std, you need to preset the mu and std
-    if invert == False:
-        if isinstance(normalize_factor, int): # direct division
-            return x.astype(np.float32) / normalize_factor
-        else: # normalize_factor == 'equation'
-            return (final_max - final_min) / (image_max - image_min) * (x.astype(np.float32) - image_min) + (final_min)
+# function: normalization using min and max
+def normalize_image(array, inverse=False, original_min=None, original_max=None):
+    if inverse:
+        if original_min is None or original_max is None:
+            raise ValueError("Original min and max values are required for denormalization.")
+        
+        # Denormalize the array
+        denormalized_array = array * (original_max - original_min) + original_min
+        return denormalized_array
     else:
-        if isinstance(normalize_factor, int): # direct division
-            return x * normalize_factor
-        else: # normalize_factor == 'equation'
-            return (x - final_min) * (image_max - image_min) / (final_max - final_min) + image_min
+        min_value = np.min(array)
+        max_value = np.max(array)
 
+        # Avoid division by zero in case all values are the same
+        if max_value - min_value == 0:
+            return np.zeros(array.shape)
 
-def cutoff_intensity(x,cutoff_low = None, cutoff_high = None):
-    xx = np.copy(x)
+        normalized_array = (array - min_value) / (max_value - min_value)
+        return normalized_array
 
-    if cutoff_low is not None and np.min(x) < cutoff_low:
-        xx[x <= cutoff_low] = cutoff_low
     
-    if cutoff_high is not None and np.max(x) > cutoff_high:
-        xx[x >= cutoff_high] = cutoff_high
-    return xx
-
 # function: translate image
 def translate_image(image, shift):
     assert len(shift) in [2, 3], "Shift must be a list of 2 elements for 2D or 3 elements for 3D"
@@ -164,157 +153,77 @@ def rotate_image(image, degrees, order, fill_val = None):
 
     return rotated_img
 
+
+# function: flip image
+def flip_image(image, flip):
+    # flip is [0,0] or [0,1] or [1,0] or [1,1], first meaning whether flip along x-axis, second meaning whether flip along y-axis
+    assert len(flip) == 2, "Flip should be a list of two elements (0 or 1)"
+    assert all(f in [0, 1] for f in flip), "Elements of flip should be either 0 or 1"
+    assert image.ndim in [2, 3], "Image must be either 2D or 3D"
+
+    flipped_image = np.copy(image)
+
+    if flip[0] == 1:  # Flip along the x-axis (vertical flip)
+        flipped_image = flipped_image[::-1, ...]
+
+    if flip[1] == 1:  # Flip along the y-axis (horizontal flip)
+        if image.ndim == 2:  # 2D image
+            flipped_image = flipped_image[:, ::-1]
+        elif image.ndim == 3:  # 3D image
+            flipped_image = flipped_image[:,  ::-1, :]
+
+    return flipped_image
+
+
+# function: cutoff intensity
+def cutoff_intensity(img, cutoff_low = None, cutoff_high = None):
+    xx = np.copy(img)
+
+    if cutoff_low is not None and np.min(img) < cutoff_low:
+        xx[img <= cutoff_low] = cutoff_low
     
-
-def save_partial_volumes(img_list,file_name,slice_range = None): # only save some slices of an original CT volume
-    for img_file in img_list:
-        f = os.path.join(os.path.dirname(img_file),file_name)
-
-        if os.path.isfile(f) == 1:
-            print('already saved partial volume')
-            continue
-        
-        x = nb.load(img_file)
-        img = x.get_data()
-        print(img_file,img.shape)
-        
-
-        if slice_range == None:
-            # slice_range = [int(img.shape[-1]/2) - 30, int(img.shape[-1]/2) + 30]
-            slice_range = [10,60]
-        
-        if img.shape[-1] < (slice_range[1] - slice_range[0]):
-            print('THIS ONE DOES NOT HAVE ENOUGH SLICES, CONTINUE')
-            continue
-        
-        img = img[:,:,slice_range[0]:slice_range[1]]
-
-        # ff.make_folder([f])
-        img = nb.Nifti1Image(img,x.affine)
-        nb.save(img, f)
+    if cutoff_high is not None and np.max(img) > cutoff_high:
+        xx[img >= cutoff_high] = cutoff_high
+    return xx
 
 
-def downsample_crop_image(img_list, file_name, crop_size, factor = [2,2,1],):
-    # crop_size = [128,128,z_dim]
-
-    for img_file in img_list:
-        f = os.path.join(os.path.dirname(img_file),file_name)
-        print(img_file)
-
-        if os.path.isfile(f) == 1:
-            print('already saved partial volume')
-            continue
-        #
-        x = nb.load(img_file)
-        header = x.header
-        spacing = x.header.get_zooms()
-        affine = x.affine
-        img = x.get_fdata()
-
-        img_ds =  block_reduce(img, block_size = (factor[0] , factor[1], factor[2]), func=np.mean)
-        img_ds = crop_or_pad(img_ds,crop_size, value = np.min(img_ds))
-
-        # new parameters
-        new_spacing = [spacing[0] * factor[0], spacing[1] * factor[1], spacing[2] * factor[2]]
-        
-        T = np.eye(4); T[0,0] = factor[0]; T [1,1] = factor[1]; T[2,2] = factor[2] 
-        new_affine = np.dot(affine,T)
-        new_header = header; new_header['pixdim'] = [-1, new_spacing[0], new_spacing[1], new_spacing[2],0,0,0,0]
-
-        # save downsampled image
-        recon_nb = nb.Nifti1Image(img_ds, new_affine, header  = new_header)
-        nb.save(recon_nb, f)
-
-    
-def move_3Dimage(image, d):
-    if len(d) == 3:  # 3D
-
-        d0, d1, d2 = d
-        S0, S1, S2 = image.shape
-
-        start0, end0 = 0 - d0, S0 - d0
-        start1, end1 = 0 - d1, S1 - d1
-        start2, end2 = 0 - d2, S2 - d2
-
-        start0_, end0_ = max(start0, 0), min(end0, S0)
-        start1_, end1_ = max(start1, 0), min(end1, S1)
-        start2_, end2_ = max(start2, 0), min(end2, S2)
-
-        # Crop the image
-        crop = image[start0_: end0_, start1_: end1_, start2_: end2_]
-        crop = np.pad(crop,
-                        ((start0_ - start0, end0 - end0_), (start1_ - start1, end1 - end1_),
-                        (start2_ - start2, end2 - end2_)),
-                        'constant')
-
-    if len(d) == 2: # 2D
-        d0, d1 = d
-        S0, S1 = image.shape
-
-        start0, end0 = 0 - d0, S0 - d0
-        start1, end1 = 0 - d1, S1 - d1
-
-        start0_, end0_ = max(start0, 0), min(end0, S0)
-        start1_, end1_ = max(start1, 0), min(end1, S1)
-
-        # Crop the image
-        crop = image[start0_: end0_, start1_: end1_]
-        crop = np.pad(crop,
-                        ((start0_ - start0, end0 - end0_), (start1_ - start1, end1 - end1_)),
-                        'constant')
-
-    return crop
-
-
-def resample_nifti(nifti, 
-                   order,
-                   mode, #'nearest' or 'constant' or 'reflect' or 'wrap'    
-                   cval,
-                   in_plane_resolution_mm=1.25,
-                   slice_thickness_mm=None,
-                   number_of_slices=None):
-    
-    # sometimes dicom to nifti programs don't define affine correctly.
-    resolution = np.array(nifti.header.get_zooms()[:3] + (1,))
-    if (np.abs(nifti.affine)==np.identity(4)).all():
-        nifti.set_sform(nifti.affine*resolution)
-
-
-    data   = nifti.get_fdata().copy()
-    shape  = nifti.shape[:3]
-    affine = nifti.affine.copy()
-    zooms  = nifti.header.get_zooms()[:3] 
-
-    if number_of_slices is not None:
-        new_zooms = (in_plane_resolution_mm,
-                     in_plane_resolution_mm,
-                     (zooms[2] * shape[2]) / number_of_slices)
-    elif slice_thickness_mm is not None:
-        new_zooms = (in_plane_resolution_mm,
-                     in_plane_resolution_mm,
-                     slice_thickness_mm)            
+# function: bounding box generation based on ground truth segmentation
+def get_bbox_from_mask_2D(mask, class_id = 1, box_buffer =['random',10]):
+    '''Returns a bounding box from a mask'''
+    y_indices, x_indices = np.where(mask == class_id)
+    x_min, x_max = np.min(x_indices), np.max(x_indices)
+    y_min, y_max = np.min(y_indices), np.max(y_indices)
+    # add perturbation to bounding box coordinates
+    H, W = mask.shape
+    if box_buffer[0] == 'random':
+        x_min = max(0, x_min - np.random.randint(0, box_buffer[1]))
+        x_max = min(W, x_max + np.random.randint(0, box_buffer[1]))
+        y_min = max(0, y_min - np.random.randint(0, box_buffer[1]))
+        y_max = min(H, y_max + np.random.randint(0, box_buffer[1]))
+    elif box_buffer[0] == 'fixed':
+        x_min = max(0, x_min - box_buffer[1])
+        x_max = min(W, x_max + box_buffer[1])
+        y_min = max(0, y_min - box_buffer[1])
+        y_max = min(H, y_max + box_buffer[1])
     else:
-        new_zooms = (in_plane_resolution_mm,
-                     in_plane_resolution_mm,
-                     zooms[2])
+        raise ValueError('box_buffer[0] must be either random or fixed')
+   
+    return np.array([x_min, y_min, x_max, y_max]).astype(int)
 
-    new_zooms = np.array(new_zooms)
-    for i, (n_i, res_i, res_new_i) in enumerate(zip(shape, zooms, new_zooms)):
-        n_new_i = (n_i * res_i) / res_new_i
-        # to avoid rounding ambiguities
-        if (n_new_i  % 1) == 0.5: 
-            new_zooms[i] -= 0.001
+def get_bbox_from_mask_all_volumes(mask,tf_list, class_id = 1, box_buffer =['random',5]):
+    assert len(mask.shape) == 3
+    if len(tf_list) == 2:
+        z_max = tf_list[0]; z_min = tf_list[1]
+    elif len(tf_list) == 1:
+        z_max = tf_list[0]; z_min = tf_list[0]
+    else:
+        z_max = tf_list[0]; z_min = tf_list[len(tf_list)//2]
+    box_list = []
+    for z in [z_max, z_min]:
+        box = get_bbox_from_mask_2D(mask[:,:,z], class_id = class_id, box_buffer = box_buffer)
+        if z == z_max:
+            box_max = box
+        box_list.append(box)
+        
+    return np.stack(box_list,axis = 0), z_max, z_min
 
-    data_resampled, affine_resampled = reslice(data, affine, zooms, new_zooms, order=order, mode=mode , cval = cval)
-    nifti_resampled = nb.Nifti1Image(data_resampled, affine_resampled)
-
-    x=nifti_resampled.header.get_zooms()[:3]
-    y=new_zooms
-    if not np.allclose(x,y, rtol=1e-02):
-        print('not all close: ', x,y)
-
-    return nifti_resampled       
-    
-    
-    
-    

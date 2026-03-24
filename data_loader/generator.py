@@ -9,11 +9,9 @@ import nibabel as nb
 import torch
 import matplotlib.pyplot as plt
 sys.path.append('/host/d/Github')
-import Whole_heart_segmentation_junzhe.functions_collection as ff
-import Whole_heart_segmentation_junzhe.Data_processing as Data_processing
-import Whole_heart_segmentation_junzhe.data_loader.random_aug as random_aug
-
-
+import whole_heart_segmentation_ZC.functions_collection as ff
+import whole_heart_segmentation_ZC.Data_processing as Data_processing
+import whole_heart_segmentation_ZC.data_loader.random_aug as random_aug
 
 
 # main function:
@@ -33,6 +31,8 @@ class Dataset_CMR(torch.utils.data.Dataset):
             augment_frequency = 0.5, # how often do we do augmentation
             rotate_range = [-10,10],
             translate_range = [-10,10],
+
+            args = None,
             ):
 
         super().__init__()
@@ -47,6 +47,7 @@ class Dataset_CMR(torch.utils.data.Dataset):
         self.translate_range = translate_range
         self.slice_num = slice_num
         self.slice_range = slice_range
+        self.args = args
 
         # how many cases we have in this dataset?
         self.num_files = len(self.image_file_list)
@@ -93,7 +94,6 @@ class Dataset_CMR(torch.utils.data.Dataset):
             ii_new[ii==820] = 6
             ii_new[ii==850] = 7
             ii = np.copy(ii_new)
-
     
         return ii
     
@@ -131,11 +131,11 @@ class Dataset_CMR(torch.utils.data.Dataset):
 
         # 对于size_x来说，candidates中大于等于size_x的最小值是什么？
         need_be_divisble_by = 128
-        target_size_x = size_x // need_be_divisble_by * need_be_divisble_by
+        target_size_x = self.args.img_size #size_x // need_be_divisble_by * need_be_divisble_by
         image_loaded = Data_processing.crop_or_pad(image_loaded, target_size = [target_size_x, target_size_x, image_loaded.shape[2]], padding_value = np.min(image_loaded))
         seg_loaded = Data_processing.crop_or_pad(seg_loaded, target_size = [target_size_x, target_size_x, seg_loaded.shape[2]], padding_value = np.min(seg_loaded))
 
-        # 随机选slice_num=5个slice
+        # 随机选slice_num个slice
         if self.slice_range is not None:
             slice_start = self.slice_range[0]
             slice_end = slice_start + self.slice_num
@@ -143,34 +143,12 @@ class Dataset_CMR(torch.utils.data.Dataset):
             slice_start = np.random.randint(0, image_loaded.shape[2] - self.slice_num)
             
             slice_end = slice_start + self.slice_num
-        start_slice = np.random.randint(0, image_loaded.shape[2] - 5)
-        image_loaded = image_loaded[:,:, start_slice : start_slice + 5]
-        seg_loaded = seg_loaded[:,:, start_slice : start_slice + 5]
+        start_slice = np.random.randint(0, image_loaded.shape[2] - self.slice_num)
+        image_loaded = image_loaded[:,:, start_slice : start_slice + self.slice_num]
+        seg_loaded = seg_loaded[:,:, start_slice : start_slice + self.slice_num]
 
 
-        # # center crop
-        # if self.have_manual_seg is True:
-        #     # find centroid based on the segmenation class 1
-        #     _,_, self.centroid = Data_processing.center_crop( image_loaded, seg_loaded, self.image_shape, according_to_which_class = self.center_crop_according_to_which_class , centroid = None)
 
-        # elif self.have_manual_seg is False:
-        #     # center is the image center
-        #     self.centroid = [image_loaded.shape[0]//2, image_loaded.shape[1]//2]
-
-        #  # random crop (randomly shift the centroid)
-        # if self.augment == True and np.random.uniform(0,1)  < self.augment_frequency:
-        #     random_centriod_shift_x = np.random.randint(-5,5)
-        #     random_centriod_shift_y = np.random.randint(-5,5)
-        #     centroid_used_for_crop = [self.centroid[0] + random_centriod_shift_x, self.centroid[1] + random_centriod_shift_y]
-        # else:
-        #     centroid_used_for_crop = self.centroid
-                
-        # # crop this 2D case
-        # image_loaded = image_loaded[centroid_used_for_crop[0] - self.image_shape[0]//2 : centroid_used_for_crop[0] + self.image_shape[0]//2,
-        #                                 centroid_used_for_crop[1] - self.image_shape[1]//2 : centroid_used_for_crop[1] + self.image_shape[1]//2 ]
-        # seg_loaded = seg_loaded[centroid_used_for_crop[0] - self.image_shape[0]//2 : centroid_used_for_crop[0] + self.image_shape[0]//2,
-        #                                 centroid_used_for_crop[1] - self.image_shape[1]//2 : centroid_used_for_crop[1] + self.image_shape[1]//2 ]
-        
         # temporarily save our data
         self.current_image_file = image_filename
         self.current_image_data = np.copy(image_loaded)  
@@ -227,13 +205,16 @@ class Dataset_CMR(torch.utils.data.Dataset):
             processed_image = Data_processing.normalize_image(processed_image,inverse = False) 
 
         image_size = processed_image.shape
-        print('after augmentation, image min:', np.min(processed_image), ' max:', np.max(processed_image))
+        # print('after augmentation, image min:', np.min(processed_image), ' max:', np.max(processed_image))
 
         # put into torch tensor
         processed_image = torch.from_numpy(processed_image).float().unsqueeze(0)  # add channel dimension
         processed_seg = torch.from_numpy(processed_seg).float().unsqueeze(0)  # add channel dimension
         original_image = torch.from_numpy(original_image).float().unsqueeze(0)  # add channel dimension
         original_seg = torch.from_numpy(original_seg).float().unsqueeze(0)  #
+
+        # print how many classes in the original seg
+        print('seg classes: ', np.unique(original_seg))
 
         # put into a dictionary
         

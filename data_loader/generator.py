@@ -13,6 +13,19 @@ import whole_heart_segmentation_ZC.functions_collection as ff
 import whole_heart_segmentation_ZC.Data_processing as Data_processing
 import whole_heart_segmentation_ZC.data_loader.random_aug as random_aug
 
+def split_slice_range(slice_range, slice_num, how_many_slices_set_per_case):
+    a, b = slice_range
+    assert (b - a) == slice_num * how_many_slices_set_per_case, \
+        "Range length does not match slice_num * how_many_slices_set_per_case"
+
+    sections = []
+    for i in range(how_many_slices_set_per_case):
+        start = a + i * slice_num
+        end = start + slice_num
+        sections.append([start, end])
+
+    return sections
+
 
 # main function:
 class Dataset_CMR(torch.utils.data.Dataset):
@@ -21,9 +34,9 @@ class Dataset_CMR(torch.utils.data.Dataset):
             image_file_list,
             seg_file_list,
 
-            slice_num = 5,
+            args = None,
+            how_many_slices_set_per_case = None,
             slice_range = None,
-
 
             shuffle = None,
             image_normalization = True,
@@ -32,12 +45,14 @@ class Dataset_CMR(torch.utils.data.Dataset):
             rotate_range = [-10,10],
             translate_range = [-10,10],
 
-            args = None,
             ):
 
         super().__init__()
         self.image_file_list = image_file_list
         self.seg_file_list = seg_file_list
+        self.args = args
+
+        self.how_many_slices_set_per_case = how_many_slices_set_per_case
       
         self.shuffle = shuffle
         self.image_normalization = image_normalization
@@ -45,12 +60,13 @@ class Dataset_CMR(torch.utils.data.Dataset):
         self.augment_frequency = augment_frequency
         self.rotate_range = rotate_range
         self.translate_range = translate_range
-        self.slice_num = slice_num
         self.slice_range = slice_range
-        self.args = args
-
-        # how many cases we have in this dataset?
-        self.num_files = len(self.image_file_list)
+        self.slice_num = self.args.slice_num
+        if self.slice_range is not None:
+            assert (self.slice_range[1]- self.slice_range[0]) == self.slice_num * self.how_many_slices_set_per_case, "the total number of slices should match the product of slice_num and how_many_slices_set_per_case"
+        
+        # how many samples we have
+        self.num_samples = len(self.image_file_list) * self.how_many_slices_set_per_case
 
         # the following two should be run at the beginning of each epoch
         # 1. get index array
@@ -64,20 +80,25 @@ class Dataset_CMR(torch.utils.data.Dataset):
 
     # function: how many sample do we have in this dataset? 
     def __len__(self):
-        return self.num_files
+        return self.num_samples
         
     # function: we need to generate an index array for dataloader, it's a list, each element is [file_index, slice_index]
     def generate_index_array(self):
         np.random.seed()
-                
+        index_array = []
+
         if self.shuffle == True:
-            file_index_list = np.random.permutation(self.num_files)
+            file_index_list = np.random.permutation(len(self.image_file_list))
         else:
-            file_index_list = np.arange(self.num_files)
+            file_index_list = np.arange(len(self.image_file_list))
 
-        index_array = file_index_list.tolist()  # each element is file index now
-
+        for f in file_index_list:
+            set_index_list = np.arange(self.how_many_slices_set_per_case)
+            for s in set_index_list:
+                index_array.append([f, s])
+                
         return index_array
+
     
     # function: 
     def load_file(self, filename, segmentation_load = False):
@@ -100,10 +121,10 @@ class Dataset_CMR(torch.utils.data.Dataset):
 
     # function: get each item using the index [file_index]
     def __getitem__(self, index):
-        f = self.index_array[index]
+        f,s = self.index_array[index]
         image_filename = self.image_file_list[f]
         seg_filename = self.seg_file_list[f]
-        print('loading image file:', image_filename, ' seg file:', seg_filename)
+        
 
         # check if manual seg exists
         if os.path.isfile(seg_filename) is False:
@@ -113,47 +134,44 @@ class Dataset_CMR(torch.utils.data.Dataset):
             
         # if it's a new case, then do the data loading; if it's not, then just use the current data
         if image_filename != self.current_image_file or seg_filename != self.current_seg_file:
+            print('loading image file:', image_filename, ' seg file:', seg_filename)
             image_loaded = self.load_file(image_filename, segmentation_load = False) 
 
             if self.have_manual_seg is True:
                 seg_loaded = self.load_file(seg_filename, segmentation_load = True) 
             else:
                 seg_loaded = np.zeros(image_loaded.shape, dtype = np.int)
+            
+            self.current_image_data = image_loaded
+            self.current_seg_data = seg_loaded
+            self.current_image_file = image_filename 
+            self.current_seg_file = seg_filename
+
+            # set the slice sets
+            # in each set, we have args.slice_num个slices, 
+            if self.slice_range is not None:
+                self.slices_set = split_slice_range(self.slice_range, self.slice_num, self.how_many_slices_set_per_case)
+            else:
+                max_start = image_loaded.shape[2] - self.slice_num
+                starts = np.random.randint(0, max_start + 1, size=self.how_many_slices_set_per_case)
+
+                self.slices_set = [[int(s), int(s + self.slice_num)] for s in starts]
+            # print('slice sets is ', self.slices_set)
+        else:
+            image_loaded = self.current_image_data
+            seg_loaded = self.current_seg_data
 
         # crop or pad
-        # 对于Unet来说，如果降采样了n次，那么输入的尺寸最好是2^n的倍数
-        # 同时，sam的encoding是16的倍数
-        # 所以我们的size_x和size_y都设置为(2^n*16)的倍数
-        # 假设n=3，那么size_x和size_y都设置为128的倍数，选择有[128,256,384,512]
-        size_x = image_loaded.shape[0]
-        size_y = image_loaded.shape[1]
-        assert size_x == size_y
-
-        # 对于size_x来说，candidates中大于等于size_x的最小值是什么？
-        need_be_divisble_by = 128
-        target_size_x = self.args.img_size #size_x // need_be_divisble_by * need_be_divisble_by
+        target_size_x = self.args.img_size 
         image_loaded = Data_processing.crop_or_pad(image_loaded, target_size = [target_size_x, target_size_x, image_loaded.shape[2]], padding_value = np.min(image_loaded))
         seg_loaded = Data_processing.crop_or_pad(seg_loaded, target_size = [target_size_x, target_size_x, seg_loaded.shape[2]], padding_value = np.min(seg_loaded))
 
-        # 随机选slice_num个slice
-        if self.slice_range is not None:
-            slice_start = self.slice_range[0]
-            slice_end = slice_start + self.slice_num
-        else:
-            slice_start = np.random.randint(0, image_loaded.shape[2] - self.slice_num)
-            
-            slice_end = slice_start + self.slice_num
-        start_slice = np.random.randint(0, image_loaded.shape[2] - self.slice_num)
-        image_loaded = image_loaded[:,:, start_slice : start_slice + self.slice_num]
-        seg_loaded = seg_loaded[:,:, start_slice : start_slice + self.slice_num]
+        # pick index s in slices_set
+        [start_slice, end_slice] = self.slices_set[s]
+        # print('selected slice range:', start_slice, end_slice)
+        image_loaded = image_loaded[:,:, start_slice : end_slice]
+        seg_loaded = seg_loaded[:,:, start_slice : end_slice]
 
-
-
-        # temporarily save our data
-        self.current_image_file = image_filename
-        self.current_image_data = np.copy(image_loaded)  
-        self.current_seg_file = seg_filename
-        self.current_seg_data = np.copy(seg_loaded)
 
         # augmentation
         original_image = np.copy(image_loaded)
@@ -213,8 +231,6 @@ class Dataset_CMR(torch.utils.data.Dataset):
         original_image = torch.from_numpy(original_image).float().unsqueeze(0)  # add channel dimension
         original_seg = torch.from_numpy(original_seg).float().unsqueeze(0)  #
 
-        # print how many classes in the original seg
-        print('seg classes: ', np.unique(original_seg))
 
         # put into a dictionary
         

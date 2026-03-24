@@ -83,6 +83,7 @@ class Adapter3D(nn.Module):
         assert h == H and w == W
         assert BT % T == 0
 
+
         B = BT // T
         residual = x
 
@@ -192,7 +193,6 @@ class Block_timesformer(nn.Module):
     
         ### modify by ZC 03/24/2026
         x_3d = self.adapter3D(x, T=T, H=H, W=W)
-        print('use adapter3D')
 
         ## Spatial
         res_spatial = self.attn(self.norm1(x_3d)) 

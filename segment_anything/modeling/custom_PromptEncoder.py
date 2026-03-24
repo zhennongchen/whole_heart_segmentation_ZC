@@ -183,7 +183,6 @@ class PromptEncoder(nn.Module):
             text_embeddings = text_embeddings.unsqueeze(1)
             sparse_embeddings = torch.cat([sparse_embeddings, text_embeddings], dim=1)
 
-        print('in prompt encoder, the image embedding size is ', self.image_embedding_size)
     
         return sparse_embeddings, dense_embeddings
 

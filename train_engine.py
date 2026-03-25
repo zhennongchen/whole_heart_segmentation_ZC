@@ -9,8 +9,41 @@ import logging
 from einops import rearrange
 import utils.misc as misc
 import utils.lr_sched as lr_sched
+import torch.nn as nn
 import torch.nn.functional as F
 import whole_heart_segmentation_ZC.functions_collection as ff
+
+## modify by ZC 03/25
+class FocalCrossEntropyLoss(nn.Module):
+    def __init__(self, gamma=2.0, reduction='mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, pred, mask):
+        """
+        pred: [B, C, H, W]   raw logits
+        mask: [B, H, W]   integer class labels
+        """
+        target = mask
+
+        # ordinary pixel-wise cross entropy
+        ce_loss = F.cross_entropy(pred, target, reduction='none')   # [B, H, W]
+
+        # pt = probability of the ground-truth class
+        pt = torch.exp(-ce_loss)
+
+        # focal cross entropy
+        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+        
+
 
 def train_loop(model: torch.nn.Module,
                data_loader_train: Iterable,
@@ -28,12 +61,17 @@ def train_loop(model: torch.nn.Module,
     accum_iter = args.accum_iter
     
     model.train(True)
-    
-    if args.turn_zero_seg_slice_into is not None:
-        criterionBCE = torch.nn.CrossEntropyLoss(ignore_index=10)
-        # print('in train loop we have turn_zero_seg_slice_into: ', args.turn_zero_seg_slice_into)
+
+    ## modify by ZC 03/25
+    if args.CE == 'focal':
+        criterionBCE = FocalCrossEntropyLoss(gamma=2.0)
     else:
-        criterionBCE = torch.nn.CrossEntropyLoss()
+        if args.turn_zero_seg_slice_into is not None:
+            criterionBCE = torch.nn.CrossEntropyLoss(ignore_index=10)
+            # print('in train loop we have turn_zero_seg_slice_into: ', args.turn_zero_seg_slice_into)
+        else:
+            criterionBCE = torch.nn.CrossEntropyLoss()
+    
 
     # start to train
     average_loss = []; average_lossCE = []; average_lossDICE = []
@@ -53,9 +91,11 @@ def train_loop(model: torch.nn.Module,
             mask = batch["mask"]
             mask = rearrange(mask, 'b c h w d -> (b d) c h w ').to("cuda")
             # print('mask shape: ', mask.shape, ' unique mask values: ', torch.unique(mask))
-                   
+            
+            # focal CE
             lossCE = criterionBCE(output["masks"], torch.clone(mask).squeeze(1).long()) 
-            lossDICE = ff.customized_dice_loss(output["masks"], torch.clone(mask).squeeze(1).long(), num_classes = args.num_classes)#, exclude_index = args.turn_zero_seg_slice_into)
+            # DICE loss, ## modify by ZC 03/25
+            lossDICE = ff.customized_dice_loss(output["masks"], torch.clone(mask).squeeze(1).long(), num_classes = args.num_classes, only_present_mask = args.DICE_only_present_mask)#, exclude_index = args.turn_zero_seg_slice_into)
             # print('lossCE:', lossCE.item(), ' lossDICE:', lossDICE.item())
 
             #### total loss: weighted loss
@@ -97,11 +137,14 @@ def validation_loop(model, data_loader_valid,  args):
     with torch.no_grad():
                                     
         # model.eval()
-
-        if args.turn_zero_seg_slice_into is not None:
-            criterionBCE = torch.nn.CrossEntropyLoss(ignore_index=args.turn_zero_seg_slice_into)
+        if args.CE == 'focal':
+            criterionBCE = FocalCrossEntropyLoss(gamma=2.0)
         else:
-            criterionBCE = torch.nn.CrossEntropyLoss()
+            if args.turn_zero_seg_slice_into is not None:
+                criterionBCE = torch.nn.CrossEntropyLoss(ignore_index=10)
+                # print('in train loop we have turn_zero_seg_slice_into: ', args.turn_zero_seg_slice_into)
+            else:
+                criterionBCE = torch.nn.CrossEntropyLoss()
 
         average_valid_loss = []
         average_valid_lossCE = []
@@ -124,7 +167,7 @@ def validation_loop(model, data_loader_valid,  args):
             #### customized dice loss
             mask_for_dice = batch["mask"]
             mask_for_dice = rearrange(mask_for_dice, 'b c h w d -> (b d) c h w').to("cuda")
-            lossDICE = ff.customized_dice_loss(output["masks"], mask_for_dice.squeeze(1).long(), num_classes = args.num_classes, exclude_index = args.turn_zero_seg_slice_into)
+            lossDICE = ff.customized_dice_loss(output["masks"], mask_for_dice.squeeze(1).long(), num_classes = args.num_classes, exclude_index = args.turn_zero_seg_slice_into, only_present_mask = args.DICE_only_present_mask)
 
             #### total loss: weighted loss
             loss = args.loss_weights[0] * lossCE + args.loss_weights[1] * lossDICE

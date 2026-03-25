@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 
 ## important: DICE loss
-def customized_dice_loss(pred, mask, num_classes, exclude_index = 10):
+def customized_dice_loss(pred, mask, num_classes, exclude_index = 10, only_present_mask = False):
     # set valid mask to exclude pixels either equal to exclude index 
     valid_mask = (mask != exclude_index) 
 
@@ -37,7 +37,16 @@ def customized_dice_loss(pred, mask, num_classes, exclude_index = 10):
     # Dice loss is 1 minus Dice score
     dice_loss = 1 - dice_score
 
-    return torch.mean(dice_loss)
+    ## modify by ZC 03/25
+    if only_present_mask == False:
+        return torch.mean(dice_loss)
+
+    if only_present_mask == True:  ## only calculate for classes that present in the ground truth
+        # print('Calculating DICE loss only for classes present in the ground truth')
+        present_mask = (torch.sum(ground_truth_one_hot_masked, dim=(0,2,3)) > 0)
+        if torch.sum(present_mask) == 0:
+            return torch.tensor(0.0, device=pred.device)
+        return torch.mean(dice_loss[present_mask])
 
 
 # function: set window level

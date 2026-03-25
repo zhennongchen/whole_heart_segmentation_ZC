@@ -134,7 +134,7 @@ class Dataset_CMR(torch.utils.data.Dataset):
             
         # if it's a new case, then do the data loading; if it's not, then just use the current data
         if image_filename != self.current_image_file or seg_filename != self.current_seg_file:
-            print('loading image file:', image_filename, ' seg file:', seg_filename)
+            # print('loading image file:', image_filename, ' seg file:', seg_filename)
             image_loaded = self.load_file(image_filename, segmentation_load = False) 
 
             if self.have_manual_seg is True:

@@ -89,3 +89,57 @@ def train_loop(model: torch.nn.Module,
     
     
     return [average_loss_mean, average_lossCE_mean, average_lossDICE_mean]
+
+
+
+def validation_loop(model, data_loader_valid,  args): 
+        
+    with torch.no_grad():
+                                    
+        # model.eval()
+
+        if args.turn_zero_seg_slice_into is not None:
+            criterionBCE = torch.nn.CrossEntropyLoss(ignore_index=args.turn_zero_seg_slice_into)
+        else:
+            criterionBCE = torch.nn.CrossEntropyLoss()
+
+        average_valid_loss = []
+        average_valid_lossCE = []
+        average_valid_lossDICE = []
+
+        for data_iter_step, batch in tqdm(enumerate(data_loader_valid)):
+            # Note that our input shape 
+            batch["image"]= batch["image"].cuda()
+            # print('in prediction batch image shape: ', batch["image"].shape)
+
+            output = model(batch, args.img_size)
+
+            mask = batch["mask"]
+            # print('in train engine batch mask shape initially: ', mask.shape)
+            mask = rearrange(mask, 'b c h w d -> (b d) c h w ').to("cuda")
+
+            #### CE loss
+            lossCE = criterionBCE(output["masks"], mask.squeeze(1).long()) 
+            
+            #### customized dice loss
+            mask_for_dice = batch["mask"]
+            mask_for_dice = rearrange(mask_for_dice, 'b c h w d -> (b d) c h w').to("cuda")
+            lossDICE = ff.customized_dice_loss(output["masks"], mask_for_dice.squeeze(1).long(), num_classes = args.num_classes, exclude_index = args.turn_zero_seg_slice_into)
+
+            #### total loss: weighted loss
+            loss = args.loss_weights[0] * lossCE + args.loss_weights[1] * lossDICE
+            
+            if torch.isnan(loss):
+                continue
+            
+            average_valid_loss.append(loss.item())
+            average_valid_lossCE.append(lossCE.item())
+            average_valid_lossDICE.append(lossDICE.item())
+
+            torch.cuda.synchronize()
+
+        average_valid_loss = sum(average_valid_loss)/len(average_valid_loss)
+        average_valid_lossCE = sum(average_valid_lossCE)/len(average_valid_lossCE)
+        average_valid_lossDICE = sum(average_valid_lossDICE)/len(average_valid_lossDICE)
+       
+    return average_valid_loss, average_valid_lossCE, average_valid_lossDICE

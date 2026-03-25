@@ -28,7 +28,7 @@ def split_slice_range(slice_range, slice_num, how_many_slices_set_per_case):
 
 
 # main function:
-class Dataset_CMR(torch.utils.data.Dataset):
+class Dataset_CMR_Simple(torch.utils.data.Dataset):
     def __init__(
             self, 
             image_file_list,
@@ -109,14 +109,14 @@ class Dataset_CMR(torch.utils.data.Dataset):
             ii_new = np.zeros_like(ii)
             ii_new[ii==500] = 1
             ii_new[ii==600] = 2
-            ii_new[ii==420] = 3
-            ii_new[ii==550] = 4
-            ii_new[ii==205] = 5
-            ii_new[ii==820] = 6
-            ii_new[ii==850] = 7
+            # ii_new[ii==420] = 3
+            # ii_new[ii==550] = 4
+            ii_new[ii==205] = 3
+            # ii_new[ii==820] = 6
+            # ii_new[ii==850] = 7
 
             # according to args.num_classes, only keep these classes
-            ii_new[ii_new >= self.args.num_classes] = 0
+            # ii_new[ii_new >= self.args.num_classes] = 0
             
             ii = np.copy(ii_new)
             # print('unique classes in segmentation:', np.unique(ii))

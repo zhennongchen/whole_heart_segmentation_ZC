@@ -44,7 +44,6 @@ class FocalCrossEntropyLoss(nn.Module):
             return focal_loss
         
 
-
 def train_loop(model: torch.nn.Module,
                data_loader_train: Iterable,
                optimizer: torch.optim.Optimizer,
@@ -53,10 +52,10 @@ def train_loop(model: torch.nn.Module,
                args=None,
                inputtype = None):
     
-    # # make some settings
-    # metric_logger = misc.MetricLogger(delimiter="  ")
-    # metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    # header = 'Epoch: [{}]'.format(epoch)
+    # make some settings
+    metric_logger = misc.MetricLogger(delimiter="  ")
+    metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    header = 'Epoch: [{}]'.format(epoch)
      
     accum_iter = args.accum_iter
     
@@ -76,21 +75,19 @@ def train_loop(model: torch.nn.Module,
     # start to train
     average_loss = []; average_lossCE = []; average_lossDICE = []
 
-        
-    for data_iter_step, batch in enumerate(tqdm(data_loader_train)):
+    for data_iter_step, batch in enumerate(metric_logger.log_every(data_loader_train ,args.print_freq, header)):
         with torch.cuda.amp.autocast():
-            if (data_iter_step + 1) % accum_iter == 0 or data_iter_step == len(data_loader_train) - 1:
-                optimizer.zero_grad()
 
             batch["image"]= batch["image"].float().cuda()
             # print('batch image shape:', batch["image"].shape)
+            
                 
             output = model(batch, args.img_size)
             # print('output shape: ',output["masks"].shape)
 
             mask = batch["mask"]
             mask = rearrange(mask, 'b c h w d -> (b d) c h w ').to("cuda")
-            # print('mask shape: ', mask.shape, ' unique mask values: ', torch.unique(mask))
+            # print(' unique mask values: ', torch.unique(mask))
             
             # focal CE
             lossCE = criterionBCE(output["masks"], torch.clone(mask).squeeze(1).long()) 
@@ -100,29 +97,58 @@ def train_loop(model: torch.nn.Module,
 
             #### total loss: weighted loss
             loss = args.loss_weights[0] * lossCE + args.loss_weights[1] * lossDICE
+            # print('loss:', loss.item(), 'lossCE:', lossCE.item(), 'lossDICE:', lossDICE.item())
+            output_clone = torch.clone(output["masks"])
+            pred = torch.clone(output_clone)
+            output_clone = output_clone.argmax(dim=1)
+            # print('unique classes in output:', torch.unique(output_clone))
                    
-            if torch.isnan(loss):
-                continue
+            # if torch.isnan(loss):
+            #     print('loss is nan, continue!!!!!!!!')
+            #     continue
+            # else:
+            #     print('loss is valid, the value:', loss.item())
 
             subset_params = [p for p in model.parameters()]
+            loss_scaler(loss, optimizer, parameters=subset_params,
+                        update_grad=(data_iter_step + 1) % accum_iter == 0)  
+            
+            if (data_iter_step + 1) % accum_iter == 0 or data_iter_step == len(data_loader_train) - 1:
+                    optimizer.zero_grad()
             # print('number of subset params:', len(subset_params))
                 
             # I'll not use the complicated loss scaler here
             # loss_scaler(loss, optimizer, parameters=subset_params,update_grad = True)#, update_grad=(data_iter_step + 1) % accum_iter == 0)  
             # backward using the easiest way
-            if (data_iter_step + 1) % accum_iter == 0 or data_iter_step == len(data_loader_train) - 1:
-                loss.backward()
-                optimizer.step()
-          
-            torch.cuda.synchronize()
-            # metric_logger.update(loss1=loss.item())
-            # lr = optimizer.param_groups[0]["lr"]
-            # metric_logger.update(lr=lr)
+            # print('data iter step:', data_iter_step, ' whether data_iter_step+1 % accum_iter == 0:', (data_iter_step + 1) % accum_iter == 0)
+            # if (data_iter_step + 1) % accum_iter == 0 or data_iter_step == len(data_loader_train) - 1:
+            #     print('doing backward pass')
+            #     loss.backward()
+            #     for name, param in model.named_parameters():
+            #         if param.grad is not None:
+            #             if not torch.isfinite(param.grad).all():
+            #                 print(f"Gradient exploded in {name}")
+            #                 print("grad min:", param.grad.min().item())
+            #                 print("grad max:", param.grad.max().item())
+            #                 break
 
-            # metric_logger.synchronize_between_processes()
+            #     optimizer.step()
+
+            #     for name, param in model.named_parameters():
+            #         if not torch.isfinite(param).all():
+            #             print(f"Parameter became NaN/Inf after optimizer step: {name}")
+            #             break
+
+            
+            torch.cuda.synchronize()
+            metric_logger.update(loss1=loss.item())
+            lr = optimizer.param_groups[0]["lr"]
+            metric_logger.update(lr=lr)
+
+        metric_logger.synchronize_between_processes()
             # print("Averaged stats:", metric_logger)
         
-            average_loss.append(loss.item()); average_lossCE.append(lossCE.item()); average_lossDICE.append(lossDICE.item())
+        average_loss.append(loss.item()); average_lossCE.append(lossCE.item()); average_lossDICE.append(lossDICE.item())
             
 
     average_loss_mean = sum(average_loss)/len(average_loss);average_lossCE_mean = sum(average_lossCE)/len(average_lossCE);average_lossDICE_mean = sum(average_lossDICE)/len(average_lossDICE)

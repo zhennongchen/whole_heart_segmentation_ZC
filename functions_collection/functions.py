@@ -19,6 +19,7 @@ def customized_dice_loss(pred, mask, num_classes, exclude_index = 10, only_prese
 
     # one-hot encode the mask
     one_hot_mask = F.one_hot(mask, num_classes = exclude_index + 1).permute(0,3,1,2)
+    # print('one hot mask ', one_hot_mask.shape)
 
 
     # softmax the prediction
@@ -37,6 +38,7 @@ def customized_dice_loss(pred, mask, num_classes, exclude_index = 10, only_prese
     # Dice loss is 1 minus Dice score
     dice_loss = 1 - dice_score
 
+
     ## modify by ZC 03/25
     if only_present_mask == False:
         return torch.mean(dice_loss)
@@ -44,9 +46,12 @@ def customized_dice_loss(pred, mask, num_classes, exclude_index = 10, only_prese
     if only_present_mask == True:  ## only calculate for classes that present in the ground truth
         # print('Calculating DICE loss only for classes present in the ground truth')
         present_mask = (torch.sum(ground_truth_one_hot_masked, dim=(0,2,3)) > 0)
+        final_dice = torch.mean(dice_loss[present_mask])
+        # print('dice after present mask:', final_dice)
         if torch.sum(present_mask) == 0:
+            # print('here we have no present classes in the ground truth')
             return torch.tensor(0.0, device=pred.device)
-        return torch.mean(dice_loss[present_mask])
+        return final_dice
 
 
 # function: set window level

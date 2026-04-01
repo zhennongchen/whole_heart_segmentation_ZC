@@ -103,11 +103,11 @@ def train_loop(model: torch.nn.Module,
             output_clone = output_clone.argmax(dim=1)
             # print('unique classes in output:', torch.unique(output_clone))
                    
-            # if torch.isnan(loss):
-            #     print('loss is nan, continue!!!!!!!!')
-            #     continue
+            if torch.isnan(loss):
+                # print('loss is nan, continue!!!!!!!!')
+                continue
             # else:
-            #     print('loss is valid, the value:', loss.item())
+                # print('loss is valid, the value:', loss.item())
 
             subset_params = [p for p in model.parameters()]
             loss_scaler(loss, optimizer, parameters=subset_params,
@@ -116,30 +116,8 @@ def train_loop(model: torch.nn.Module,
             if (data_iter_step + 1) % accum_iter == 0 or data_iter_step == len(data_loader_train) - 1:
                     optimizer.zero_grad()
             # print('number of subset params:', len(subset_params))
-                
-            # I'll not use the complicated loss scaler here
-            # loss_scaler(loss, optimizer, parameters=subset_params,update_grad = True)#, update_grad=(data_iter_step + 1) % accum_iter == 0)  
-            # backward using the easiest way
-            # print('data iter step:', data_iter_step, ' whether data_iter_step+1 % accum_iter == 0:', (data_iter_step + 1) % accum_iter == 0)
-            # if (data_iter_step + 1) % accum_iter == 0 or data_iter_step == len(data_loader_train) - 1:
-            #     print('doing backward pass')
-            #     loss.backward()
-            #     for name, param in model.named_parameters():
-            #         if param.grad is not None:
-            #             if not torch.isfinite(param.grad).all():
-            #                 print(f"Gradient exploded in {name}")
-            #                 print("grad min:", param.grad.min().item())
-            #                 print("grad max:", param.grad.max().item())
-            #                 break
 
-            #     optimizer.step()
 
-            #     for name, param in model.named_parameters():
-            #         if not torch.isfinite(param).all():
-            #             print(f"Parameter became NaN/Inf after optimizer step: {name}")
-            #             break
-
-            
             torch.cuda.synchronize()
             metric_logger.update(loss1=loss.item())
             lr = optimizer.param_groups[0]["lr"]

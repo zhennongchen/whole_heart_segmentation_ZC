@@ -119,7 +119,7 @@ class Dataset_CMR(torch.utils.data.Dataset):
             ii_new[ii==850] = 7
 
             # according to args.num_classes, only keep these classes
-            # ii_new[ii_new >= self.args.num_classes] = 0
+            ii_new[ii_new >= self.args.num_classes] = 0
             
             ii = np.copy(ii_new)
             # print('unique classes in segmentation:', np.unique(ii))

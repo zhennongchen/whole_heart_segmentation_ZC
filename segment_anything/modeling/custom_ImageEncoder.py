@@ -122,6 +122,7 @@ class Block_timesformer(nn.Module):
         batch_size: int,
         multi: False,
         adapter3D_feature_dim: int = 64,
+        num_of_adapter3D_used: int = 1,
         mlp_ratio: float = 4.0,
         scale: float = 0.5,
         qkv_bias: bool = True,
@@ -172,6 +173,7 @@ class Block_timesformer(nn.Module):
             dim=dim,
             adapter_dim=adapter3D_feature_dim,   
             act_layer=act_layer)
+        self.num_of_adapter3D_used = num_of_adapter3D_used
         
         # self.temporal_norm1 = norm_layer(dim)
         # self.temporal_attn = Attention_2(
@@ -191,17 +193,19 @@ class Block_timesformer(nn.Module):
 
         # note: the feature channel num here is 768， dimensino of x is [(b*t),h,w,c]
     
-        ### modify by ZC 03/24/2026
+        ### modify by ZC 03/24/2026, 3D adapter
         x_3d = self.adapter3D(x, T=T, H=H, W=W)
 
         ## Spatial
         res_spatial = self.attn(self.norm1(x_3d)) 
-    
-        res = res_spatial
+        x = x_3d + res_spatial
 
+        # another 3D adapter
+        if self.num_of_adapter3D_used > 1:
+            x = self.adapter3D(x, T=T, H=H, W=W)
+            # print("Using additional 3D adapter")
+    
         ## Mlp
-        x = x_3d + res
-        # x = x + self.mlp(self.norm2(x))  
         x = self.mlp(self.norm2(x))  + self.scale * self.MLP_Adapter(x)
        
         return x
@@ -623,6 +627,7 @@ class ImageEncoderViT_medivista(nn.Module):
                 window_size=window_size if i not in global_attn_indexes else 0,
                 input_size=(img_size // patch_size, img_size // patch_size),
                 with_cross_frame_attention = args.cross_frame_attention, 
+                num_of_adapter3D_used = args.num_of_adapter3D_used,
             )
             self.blocks.append(block)
 

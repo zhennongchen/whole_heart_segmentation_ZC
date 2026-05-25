@@ -207,6 +207,7 @@ class Dataset_CMR(torch.utils.data.Dataset):
         seg_loaded = seg_loaded[:,:, start_slice : end_slice]
 
 
+
         # augmentation
         original_image = np.copy(image_loaded)
         original_seg = np.copy(seg_loaded)
@@ -258,6 +259,7 @@ class Dataset_CMR(torch.utils.data.Dataset):
 
         image_size = processed_image.shape
         # print('after augmentation, image min:', np.min(processed_image), ' max:', np.max(processed_image))
+
 
         # put into torch tensor
         processed_image = torch.from_numpy(processed_image).float().unsqueeze(0)  # add channel dimension

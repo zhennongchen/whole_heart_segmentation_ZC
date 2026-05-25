@@ -122,7 +122,6 @@ class Block_timesformer(nn.Module):
         batch_size: int,
         multi: False,
         adapter3D_feature_dim: int = 64,
-        num_of_adapter3D_used: int = 1,
         mlp_ratio: float = 4.0,
         scale: float = 0.5,
         qkv_bias: bool = True,
@@ -169,11 +168,16 @@ class Block_timesformer(nn.Module):
         self.window_size = window_size
 
         ### modify by ZC 03/24/2026
-        self.adapter3D = Adapter3D(
+        ##change 2026_05_26
+        self.adapter3D_1 = Adapter3D(
             dim=dim,
             adapter_dim=adapter3D_feature_dim,   
             act_layer=act_layer)
-        self.num_of_adapter3D_used = num_of_adapter3D_used
+        ##change 2026_05_26
+        self.adapter3D_2 = Adapter3D(
+            dim=dim,
+            adapter_dim=adapter3D_feature_dim,
+            act_layer=act_layer)
         
         # self.temporal_norm1 = norm_layer(dim)
         # self.temporal_attn = Attention_2(
@@ -194,19 +198,21 @@ class Block_timesformer(nn.Module):
         # note: the feature channel num here is 768， dimensino of x is [(b*t),h,w,c]
     
         ### modify by ZC 03/24/2026, 3D adapter
-        x_3d = self.adapter3D(x, T=T, H=H, W=W)
+        ##change 2026_05_26
+        x_3d = self.adapter3D_1(x, T=T, H=H, W=W)
 
         ## Spatial
         res_spatial = self.attn(self.norm1(x_3d)) 
         x = x_3d + res_spatial
 
         # another 3D adapter
-        if self.num_of_adapter3D_used > 1:
-            x = self.adapter3D(x, T=T, H=H, W=W)
-            # print("Using additional 3D adapter")
+        ##change 2026_05_26
+        x = self.adapter3D_2(x, T=T, H=H, W=W)
     
         ## Mlp
-        x = self.mlp(self.norm2(x))  + self.scale * self.MLP_Adapter(x)
+        ##change 2026_05_26
+        x_norm = self.norm2(x)
+        x = x + self.mlp(x_norm) + self.scale * self.MLP_Adapter(x_norm)
        
         return x
     
@@ -627,7 +633,6 @@ class ImageEncoderViT_medivista(nn.Module):
                 window_size=window_size if i not in global_attn_indexes else 0,
                 input_size=(img_size // patch_size, img_size // patch_size),
                 with_cross_frame_attention = args.cross_frame_attention, 
-                num_of_adapter3D_used = args.num_of_adapter3D_used,
             )
             self.blocks.append(block)
 
@@ -676,8 +681,10 @@ class ImageEncoderViT_medivista(nn.Module):
 
         x4 = rearrange(x4, "b c h w -> b h w c") # (BT), H, W, C
 
+        ##change 2026_05_26
+        x = x4
         for blk in self.blocks: 
-            x = blk(x4)
+            x = blk(x)
         x = self.out_conv(x.permute(0, 3, 1, 2)) 
         return x, [x1,x2,x3]
         
